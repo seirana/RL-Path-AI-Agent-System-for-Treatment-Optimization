@@ -203,6 +203,15 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.35,
     )
     parser.add_argument(
+        "--fixed_disease_mask",
+        action="store_true",
+        help=(
+            "Keep one sampled disease-pathway mask for all training "
+            "episodes. By default the mask is resampled each episode "
+            "and included in the observation."
+        ),
+    )
+    parser.add_argument(
         "--temporal_kernel",
         type=str,
         default="0.6,0.3,0.1",
@@ -353,7 +362,11 @@ def main() -> None:
     )
 
     for _ in range(warmup_episodes):
-        obs = env.reset()
+        obs = env.reset(
+            resample_disease_mask=(
+                not args.fixed_disease_mask
+            )
+        )
         done = False
         while not done:
             action = env.sample_action()
@@ -372,7 +385,11 @@ def main() -> None:
         1,
         args.episodes + 1,
     ):
-        obs = env.reset()
+        obs = env.reset(
+            resample_disease_mask=(
+                not args.fixed_disease_mask
+            )
+        )
         done = False
         episode_return = 0.0
 
@@ -460,6 +477,9 @@ def main() -> None:
             ),
             "disease_pathway_frac": (
                 args.disease_pathway_frac
+            ),
+            "resample_disease_mask_each_episode": (
+                not args.fixed_disease_mask
             ),
             "noise": args.noise,
             "alpha": args.alpha,
