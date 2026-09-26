@@ -1,32 +1,20 @@
-"""Preprocessing: build drugtopathway effect matrix from DGIdb + Reactome.
+"""Build a drug-to-pathway effect matrix from DGIdb and Reactome inputs.
 
-Inputs
-------
-- data/raw/dgidb_interactions.tsv
-- data/raw/Ensembl2Reactome.txt
-
-Outputs
--------
-- data/processed/drug_pathway_effects.npz
-- data/processed/metadata.json
-
-Notes
------
-DGIdb interactions are typically keyed by gene symbols. Reactome mapping here is
-Ensembl-based, so we map symbols to Ensembl using mygene.info (cached locally).
+The generated matrix is a research abstraction for the RL simulator. It represents
+normalized pathway coverage derived from mapped drug-gene interactions; it is not a
+clinical drug-effect estimate.
 """
 
 from __future__ import annotations
 
-import json
 import re
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List
 
+import mygene
 import numpy as np
 import pandas as pd
-import mygene
 
 
 @dataclass(frozen=True)
@@ -34,7 +22,7 @@ class EffectMatrix:
     drug_names: List[str]
     pathway_ids: List[str]
     pathway_names: List[str]
-    effects: np.ndarray  # shape (N_drugs, N_pathways)
+    effects: np.ndarray
 
 
 def _normalize_symbol(sym: str) -> str:
@@ -45,78 +33,149 @@ def _normalize_symbol(sym: str) -> str:
 
 def load_dgidb_interactions(path: Path) -> pd.DataFrame:
     df = pd.read_csv(path, sep="\t", dtype=str)
-    # Try to locate drug and gene columns robustly
-    cols = {c.lower(): c for c in df.columns}
+    cols = {column.lower(): column for column in df.columns}
 
-    # Common DGIdb column patterns (historically):
-    #   - drug_name, gene_name
-    #   - drug_claim_name, gene_claim_name
     drug_col = None
     gene_col = None
-    for cand in ["drug_name", "drug", "drugclaim", "drug_claim_name"]:
-        for k, v in cols.items():
-            if cand in k:
-                drug_col = v
+
+    for candidate in [
+        "drug_name",
+        "drug",
+        "drugclaim",
+        "drug_claim_name",
+    ]:
+        for normalized, original in cols.items():
+            if candidate in normalized:
+                drug_col = original
                 break
         if drug_col:
             break
-    for cand in ["gene_name", "gene", "geneclaim", "gene_claim_name", "gene_symbol", "genesymbol"]:
-        for k, v in cols.items():
-            if cand in k:
-                gene_col = v
+
+    for candidate in [
+        "gene_name",
+        "gene",
+        "geneclaim",
+        "gene_claim_name",
+        "gene_symbol",
+        "genesymbol",
+    ]:
+        for normalized, original in cols.items():
+            if candidate in normalized:
+                gene_col = original
                 break
         if gene_col:
             break
 
     if drug_col is None or gene_col is None:
         raise ValueError(
-            f"Could not detect drug/gene columns in DGIdb file. Columns={list(df.columns)}"
+            "Could not detect drug/gene columns in DGIdb file. "
+            f"Columns={list(df.columns)}"
         )
 
-    out = df[[drug_col, gene_col]].rename(columns={drug_col: "drug", gene_col: "gene_symbol"})
+    out = df[[drug_col, gene_col]].rename(
+        columns={
+            drug_col: "drug",
+            gene_col: "gene_symbol",
+        }
+    )
     out["drug"] = out["drug"].astype(str).str.strip()
-    out["gene_symbol"] = out["gene_symbol"].astype(str).map(_normalize_symbol)
-    out = out[(out["drug"] != "") & (out["gene_symbol"] != "")].drop_duplicates()
+    out["gene_symbol"] = (
+        out["gene_symbol"].astype(str).map(_normalize_symbol)
+    )
+    out = out[
+        (out["drug"] != "") & (out["gene_symbol"] != "")
+    ].drop_duplicates()
+
+    if out.empty:
+        raise ValueError(
+            "DGIdb input contained no usable drug-gene rows."
+        )
     return out
 
 
 def load_reactome_ensembl2reactome(path: Path) -> pd.DataFrame:
-    # Reactome file is tab-delimited:
-    # EnsemblGeneID  ReactomePathwayID  URL  PathwayName  EvidenceCode  Species
     df = pd.read_csv(path, sep="\t", header=None, dtype=str)
     if df.shape[1] < 6:
-        raise ValueError("Ensembl2Reactome.txt format unexpected (expected >=6 columns)")
-    df = df.iloc[:, :6]
-    df.columns = ["ensembl", "pathway_id", "reactome_url", "pathway_name", "evidence", "species"]
-    df["ensembl"] = df["ensembl"].astype(str).str.strip()
-    df["pathway_id"] = df["pathway_id"].astype(str).str.strip()
-    df["pathway_name"] = df["pathway_name"].astype(str).str.strip()
-    df["species"] = df["species"].astype(str).str.strip()
-    # Focus on Homo sapiens only
-    df = df[df["species"].str.lower().isin(["homo sapiens", "homo\u00a0sapiens", "homo sapiens (human)"])]
-    df = df[(df["ensembl"] != "") & (df["pathway_id"] != "")]
+        raise ValueError(
+            "Ensembl2Reactome.txt format unexpected (expected >=6 columns)"
+        )
+
+    df = df.iloc[:, :6].copy()
+    df.columns = [
+        "ensembl",
+        "pathway_id",
+        "reactome_url",
+        "pathway_name",
+        "evidence",
+        "species",
+    ]
+
+    for column in [
+        "ensembl",
+        "pathway_id",
+        "pathway_name",
+        "species",
+    ]:
+        df[column] = df[column].astype(str).str.strip()
+
+    df = df[
+        df["species"].str.lower().isin(
+            [
+                "homo sapiens",
+                "homo\u00a0sapiens",
+                "homo sapiens (human)",
+            ]
+        )
+    ]
+    df = df[
+        (df["ensembl"] != "") & (df["pathway_id"] != "")
+    ]
     df = df.drop_duplicates(subset=["ensembl", "pathway_id"])
+
+    if df.empty:
+        raise ValueError(
+            "Reactome input contained no usable human pathway rows."
+        )
+
     return df[["ensembl", "pathway_id", "pathway_name"]]
 
 
-def map_symbols_to_ensembl(symbols: Iterable[str], cache_path: Path, species: str = "human") -> Dict[str, str]:
+def map_symbols_to_ensembl(
+    symbols: Iterable[str],
+    cache_path: Path,
+    species: str = "human",
+) -> Dict[str, str]:
+    cache_path = Path(cache_path)
     cache_path.parent.mkdir(parents=True, exist_ok=True)
 
+    cache: Dict[str, str] = {}
     if cache_path.exists():
         cache_df = pd.read_csv(cache_path, sep="\t", dtype=str)
-        cache = dict(zip(cache_df["symbol"], cache_df["ensembl"]))
-    else:
-        cache = {}
+        required = {"symbol", "ensembl"}
+        if not required.issubset(cache_df.columns):
+            raise ValueError(
+                "Symbol cache must contain columns 'symbol' and 'ensembl'."
+            )
+        cache = dict(
+            zip(cache_df["symbol"], cache_df["ensembl"])
+        )
 
-    missing = [s for s in set(symbols) if s and s not in cache]
+    requested = sorted(
+        {symbol for symbol in symbols if symbol}
+    )
+    missing = [
+        symbol
+        for symbol in requested
+        if symbol not in cache
+    ]
+
     if missing:
         mg = mygene.MyGeneInfo()
-        # Query in batches to be polite
-        results = []
         batch_size = 1000
-        for i in range(0, len(missing), batch_size):
-            batch = missing[i : i + batch_size]
-            res = mg.querymany(
+
+        for start in range(0, len(missing), batch_size):
+            batch = missing[start : start + batch_size]
+            result = mg.querymany(
                 batch,
                 scopes="symbol",
                 fields="ensembl.gene",
@@ -125,26 +184,50 @@ def map_symbols_to_ensembl(symbols: Iterable[str], cache_path: Path, species: st
                 returnall=False,
                 verbose=False,
             )
-            # res index is the query; columns include 'ensembl.gene' potentially
-            if not isinstance(res, pd.DataFrame):
-                res = pd.DataFrame(res)
-            if "ensembl.gene" in res.columns:
-                # pick first if list-like
-                mapped = res["ensembl.gene"].copy()
-                mapped = mapped.apply(lambda x: x[0] if isinstance(x, list) and x else x)
-            elif "ensembl" in res.columns:
-                mapped = res["ensembl"].apply(
-                    lambda x: x.get("gene") if isinstance(x, dict) else (x[0].get("gene") if isinstance(x, list) and x else None)
+
+            if not isinstance(result, pd.DataFrame):
+                result = pd.DataFrame(result)
+
+            if "ensembl.gene" in result.columns:
+                mapped = result["ensembl.gene"].copy()
+                mapped = mapped.apply(
+                    lambda value: (
+                        value[0]
+                        if isinstance(value, list) and value
+                        else value
+                    )
                 )
+            elif "ensembl" in result.columns:
+
+                def extract_gene(value: object) -> object:
+                    if isinstance(value, dict):
+                        return value.get("gene")
+                    if (
+                        isinstance(value, list)
+                        and value
+                        and isinstance(value[0], dict)
+                    ):
+                        return value[0].get("gene")
+                    return None
+
+                mapped = result["ensembl"].apply(extract_gene)
             else:
-                mapped = pd.Series(index=res.index, data=None)
+                mapped = pd.Series(
+                    index=result.index,
+                    data=None,
+                    dtype=object,
+                )
 
-            for sym, ens in mapped.items():
-                if isinstance(sym, str):
-                    cache[sym] = str(ens) if ens and str(ens) != "nan" else ""
+            for symbol, ensembl in mapped.items():
+                if not isinstance(symbol, str):
+                    continue
+                if ensembl is None or str(ensembl) == "nan":
+                    cache[symbol] = ""
+                else:
+                    cache[symbol] = str(ensembl).split(".")[0]
 
-        # persist cache
-        out_df = pd.DataFrame({"symbol": list(cache.keys()), "ensembl": list(cache.values())})
+        out_df = pd.DataFrame({"symbol": sorted(cache)})
+        out_df["ensembl"] = out_df["symbol"].map(cache)
         out_df.to_csv(cache_path, sep="\t", index=False)
 
     return cache
@@ -153,76 +236,132 @@ def map_symbols_to_ensembl(symbols: Iterable[str], cache_path: Path, species: st
 def build_effect_matrix(
     dgidb_df: pd.DataFrame,
     reactome_df: pd.DataFrame,
+    *,
     top_drugs: int = 60,
     top_pathways: int = 40,
-    seed: int = 42,
+    symbol_cache_path: Path = Path(
+        "data/processed/symbol_to_ensembl.tsv"
+    ),
 ) -> EffectMatrix:
-    # Map gene symbols to Ensembl, then join to pathways
-    cache_path = Path("data/processed/symbol_to_ensembl.tsv")
-    sym2ens = map_symbols_to_ensembl(dgidb_df["gene_symbol"].unique(), cache_path=cache_path)
+    if top_drugs <= 0:
+        raise ValueError("top_drugs must be greater than 0")
+    if top_pathways <= 0:
+        raise ValueError("top_pathways must be greater than 0")
 
-    dgidb_df = dgidb_df.copy()
-    dgidb_df["ensembl"] = dgidb_df["gene_symbol"].map(sym2ens).fillna("")
-    dgidb_df = dgidb_df[dgidb_df["ensembl"] != ""].drop_duplicates(subset=["drug", "ensembl"])
+    sym2ens = map_symbols_to_ensembl(
+        dgidb_df["gene_symbol"].unique(),
+        cache_path=symbol_cache_path,
+    )
 
-    joined = dgidb_df.merge(reactome_df, on="ensembl", how="inner")
+    interactions = dgidb_df.copy()
+    interactions["ensembl"] = (
+        interactions["gene_symbol"].map(sym2ens).fillna("")
+    )
+    interactions = interactions[
+        interactions["ensembl"] != ""
+    ].drop_duplicates(subset=["drug", "ensembl"])
+
+    joined = interactions.merge(
+        reactome_df,
+        on="ensembl",
+        how="inner",
+    )
     if joined.empty:
         raise ValueError(
-            "After mapping symbolstoEnsembl and joining to Reactome, no rows remained. "
-
-            "This can happen if mygene mapping failed or Reactome download is missing."
-
+            "After symbol-to-Ensembl mapping and Reactome joining, "
+            "no rows remained. Check the raw files and symbol cache."
         )
 
-    # Pick top drugs by # unique pathways covered
-    drug_counts = joined.groupby("drug")["pathway_id"].nunique().sort_values(ascending=False)
+    drug_counts = (
+        joined.groupby("drug")["pathway_id"]
+        .nunique()
+        .sort_values(ascending=False, kind="stable")
+    )
     drugs = drug_counts.head(top_drugs).index.tolist()
     joined = joined[joined["drug"].isin(drugs)]
 
-    # Pick top pathways by # unique drugs (coverage)
-    path_counts = joined.groupby("pathway_id")["drug"].nunique().sort_values(ascending=False)
+    path_counts = (
+        joined.groupby("pathway_id")["drug"]
+        .nunique()
+        .sort_values(ascending=False, kind="stable")
+    )
     pathway_ids = path_counts.head(top_pathways).index.tolist()
     joined = joined[joined["pathway_id"].isin(pathway_ids)]
 
-    # Build pathway name lookup (stable)
-    path_name = joined.drop_duplicates(subset=["pathway_id"]).set_index("pathway_id")["pathway_name"].to_dict()
-    pathway_names = [path_name.get(pid, pid) for pid in pathway_ids]
+    path_name = (
+        joined.drop_duplicates(subset=["pathway_id"])
+        .set_index("pathway_id")["pathway_name"]
+        .to_dict()
+    )
+    pathway_names = [
+        path_name.get(pathway_id, pathway_id)
+        for pathway_id in pathway_ids
+    ]
 
-    # Drug to pathway coverage matrix (counts of unique target genes)
     pivot = (
         joined.groupby(["drug", "pathway_id"])["ensembl"]
         .nunique()
         .reset_index()
-        .pivot(index="drug", columns="pathway_id", values="ensembl")
+        .pivot(
+            index="drug",
+            columns="pathway_id",
+            values="ensembl",
+        )
         .fillna(0.0)
     )
-    pivot = pivot.reindex(index=drugs, columns=pathway_ids).fillna(0.0)
+    pivot = pivot.reindex(
+        index=drugs,
+        columns=pathway_ids,
+    ).fillna(0.0)
 
-    # Convert counts to normalized effects in [0,1]
-    mat = pivot.to_numpy(dtype=np.float32)
-    # normalize per drug so effects are comparable
-    row_sums = mat.sum(axis=1, keepdims=True) + 1e-6
-    effects = mat / row_sums
+    matrix = pivot.to_numpy(dtype=np.float32)
+    row_sums = matrix.sum(axis=1, keepdims=True)
+    row_sums = np.where(row_sums > 0, row_sums, 1.0)
+    effects = (matrix / row_sums).astype(np.float32)
 
-    return EffectMatrix(drug_names=drugs, pathway_ids=pathway_ids, pathway_names=pathway_names, effects=effects)
-
-
-def save_effects(em: EffectMatrix, outdir: Path) -> None:
-    outdir.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(
-        outdir / "drug_pathway_effects.npz",
-        effects=em.effects,
-        drug_names=np.array(em.drug_names, dtype=object),
-        pathway_ids=np.array(em.pathway_ids, dtype=object),
-        pathway_names=np.array(em.pathway_names, dtype=object),
+    return EffectMatrix(
+        drug_names=drugs,
+        pathway_ids=pathway_ids,
+        pathway_names=pathway_names,
+        effects=effects,
     )
+
+
+def save_effects(em: EffectMatrix, path: Path) -> Path:
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    np.savez_compressed(
+        path,
+        effects=em.effects.astype(np.float32),
+        drug_names=np.asarray(em.drug_names, dtype=str),
+        pathway_ids=np.asarray(em.pathway_ids, dtype=str),
+        pathway_names=np.asarray(em.pathway_names, dtype=str),
+    )
+    return path
 
 
 def load_effects(path: Path) -> EffectMatrix:
-    z = np.load(path, allow_pickle=True)
+    path = Path(path)
+    with np.load(path, allow_pickle=False) as archive:
+        effects = archive["effects"].astype(np.float32)
+        drug_names = list(archive["drug_names"].astype(str))
+        pathway_ids = list(archive["pathway_ids"].astype(str))
+        pathway_names = list(
+            archive["pathway_names"].astype(str)
+        )
+
+    if effects.shape != (
+        len(drug_names),
+        len(pathway_names),
+    ):
+        raise ValueError(
+            "Stored effect matrix shape does not match "
+            "drug/pathway metadata lengths."
+        )
+
     return EffectMatrix(
-        drug_names=list(z["drug_names"].tolist()),
-        pathway_ids=list(z["pathway_ids"].tolist()),
-        pathway_names=list(z["pathway_names"].tolist()),
-        effects=z["effects"].astype(np.float32),
+        drug_names=drug_names,
+        pathway_ids=pathway_ids,
+        pathway_names=pathway_names,
+        effects=effects,
     )
