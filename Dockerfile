@@ -13,6 +13,7 @@ COPY train.py evaluate.py ./
 COPY scripts ./scripts
 
 RUN python -m pip install --upgrade pip \
+    && python -m pip install --index-url https://download.pytorch.org/whl/cpu "torch>=2.1,<3" \
     && python -m pip install .
 
 RUN mkdir -p /app/data/raw /app/data/processed /app/artifacts
