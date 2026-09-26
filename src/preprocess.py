@@ -130,7 +130,9 @@ def load_reactome_ensembl2reactome(path: Path) -> pd.DataFrame:
     df = df[
         (df["ensembl"] != "") & (df["pathway_id"] != "")
     ]
-    df = df.drop_duplicates(subset=["ensembl", "pathway_id"])
+    df = df.drop_duplicates(
+        subset=["ensembl", "pathway_id"]
+    )
 
     if df.empty:
         raise ValueError(
@@ -157,12 +159,14 @@ def map_symbols_to_ensembl(
                 "Symbol cache must contain columns 'symbol' and 'ensembl'."
             )
         cache = dict(
-            zip(\n                cache_df["symbol"],\n                cache_df["ensembl"],\n                strict=True,\n            )
+            zip(
+                cache_df["symbol"],
+                cache_df["ensembl"],
+                strict=True,
+            )
         )
 
-    requested = sorted(
-        {symbol for symbol in symbols if symbol}
-    )
+    requested = sorted({symbol for symbol in symbols if symbol})
     missing = [
         symbol
         for symbol in requested
