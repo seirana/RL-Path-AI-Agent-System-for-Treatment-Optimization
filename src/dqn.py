@@ -146,7 +146,7 @@ class ReplayBuffer:
             replace=False,
         )
         batch = [self.buf[int(i)] for i in idx]
-        s, a, r, s2, d = zip(*batch)
+        s, a, r, s2, d = zip(*batch, strict=True)
 
         return (
             np.stack(s),
