@@ -106,6 +106,7 @@ def load_hgnc_sym2ensg(
         zip(
             frame["symbol"],
             frame["ensembl_gene_id"],
+            strict=True,
         )
     )
 
@@ -377,6 +378,7 @@ def main() -> None:
             top_paths[
                 "n_psc_genes_in_pathway"
             ].astype(float),
+            strict=True,
         )
     )
     top_path_to_genes = {
