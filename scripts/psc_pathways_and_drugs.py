@@ -326,7 +326,13 @@ def main() -> None:
             )
 
     pathway_frame = pd.DataFrame(
-        pathway_rows
+        pathway_rows,
+        columns=[
+            "pathway",
+            "n_psc_genes_in_pathway",
+            "n_pathway_genes",
+            "psc_ensg_genes",
+        ],
     )
     if not pathway_frame.empty:
         pathway_frame = (
@@ -439,7 +445,13 @@ def main() -> None:
             )
 
     drug_frame = pd.DataFrame(
-        drug_rows
+        drug_rows,
+        columns=[
+            "drug",
+            "score",
+            "n_targets",
+            "total_pathway_hits",
+        ],
     )
     if not drug_frame.empty:
         drug_frame = (
