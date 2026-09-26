@@ -155,6 +155,8 @@ Equivalent:
 python train.py ...
 ```
 
+By default, training resamples the disease-pathway mask each episode and includes that mask in the observation. This exposes the policy to multiple simulated pathway targets. Use `--fixed_disease_mask` to keep one sampled mask for all episodes.
+
 Training writes a model checkpoint, return/loss traces, an evaluation summary, a learning-curve image, and machine-readable run metadata.
 
 ## Evaluate
@@ -189,7 +191,7 @@ One trained network is not enough to characterize RL optimization variability.
 Run several independent training seeds:
 
 ```bash
-python scripts/run_seed_sweep.py \
+rlpath-seed-sweep \
   --seeds 11,22,33,44,55 \
   -- \
   --episodes 400 \
@@ -209,6 +211,8 @@ Randomness is deliberately separated:
 - DQN exploration RNG;
 - replay-buffer sampling RNG;
 - PyTorch initialization seed.
+
+Because the observation was expanded to include the exact simulator context, checkpoints trained with the earlier observation layout are not architecture-compatible with this upgraded version and should be retrained.
 
 The model checkpoint records:
 
