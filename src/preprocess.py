@@ -157,7 +157,7 @@ def map_symbols_to_ensembl(
                 "Symbol cache must contain columns 'symbol' and 'ensembl'."
             )
         cache = dict(
-            zip(cache_df["symbol"], cache_df["ensembl"])
+            zip(\n                cache_df["symbol"],\n                cache_df["ensembl"],\n                strict=True,\n            )
         )
 
     requested = sorted(
