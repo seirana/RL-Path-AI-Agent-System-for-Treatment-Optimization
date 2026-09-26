@@ -1,190 +1,298 @@
 # RL-Path: AI Agent System for Treatment Optimization
 
-RL-Path is a bioinformatics reinforcement learning project that learns **ordered drug interventions** to steer a simulated disease state toward a healthier pathway profile.
+RL-Path is a reinforcement-learning **research simulator** for studying ordered drug-action policies over pathway-level state vectors.
 
-This version frames the repository as an **AI agent system for treatment optimization**:
-- **Agent**: a DQN policy that chooses the next drug
-- **Environment**: a pathway-steering simulator built from drug→pathway effects
-- **Objective**: reduce disease-associated pathway activity while penalizing long or broad interventions
+The repository explores a sequential decision problem:
 
-Compared with the original lightweight baseline, this package adds two important modeling extensions:
-- **Delayed drug effects** via a temporal kernel
-- **Drug–drug interactions** via pairwise pathway-level interaction effects
+- **state**: simulated pathway activity plus the simulator context needed for future transitions;
+- **action**: choose one drug index;
+- **transition**: apply immediate/delayed pathway effects, optional pairwise interaction terms, and noise;
+- **reward**: reduce simulated disease-pathway activity while penalizing long or broad interventions;
+- **agent**: a Deep Q-Network (DQN);
+- **baselines**: random and myopic greedy policies.
 
-These changes make the treatment dynamics more biologically realistic and make the observation more appropriate for DQN by exposing the parts of treatment history that matter for future transitions.
+> **Important:** RL-Path is not a clinical treatment recommendation system. The effect matrix is derived from pathway coverage, the delayed-effect kernel is a modeling choice, and pairwise interaction terms are heuristic simulator parameters. The project does not establish drug efficacy, safety, dosing, or patient benefit.
 
----
+See [MODEL_CARD.md](MODEL_CARD.md) for scope and limitations.
 
-## Why this is an AI agent system
+## Why reinforcement learning?
 
-This repository does not just rank drugs statically. It learns a **state-dependent treatment policy**.
+A static ranking asks which action looks best once. RL-Path instead asks which action to choose **next**, given the current simulated state and recent treatment history.
 
-At each step, the agent:
-1. observes the current pathway state
-2. selects a drug action
-3. receives feedback based on how much disease-pathway activity is reduced
-4. updates its policy from replayed experience
+This matters when the simulator contains delayed effects or interaction terms, because the value of an action can depend on what happened earlier in the episode.
 
-That makes the project a true **sequential decision-making system** for treatment optimization.
+## Environment definition
 
----
+The default observation contains every variable used by the simulator's transition/reward logic:
 
-## What changed in this version
+```text
+current pathway activity
++ disease-pathway mask
++ exact pending delayed-effect schedule
++ recent action history
++ remaining episode fraction
+```
 
-### 1. Markov-aware observation design
-The observation now includes:
-- current pathway activity vector
-- summary of pending delayed effects still scheduled to land in future steps
-- one-hot encoding of the most recent drug action
-- remaining-step fraction
+The action is one discrete drug index.
 
-This matters because once delayed effects or interaction history are added, the pathway vector alone is no longer enough for a value-based RL agent.
+The reward is:
 
-### 2. Delayed effects
-Use `--temporal_kernel` to control how a drug acts over time.
+```text
+reduction in disease-pathway MSE
+- per-step penalty
+- action-breadth cost
+```
+
+This makes the default observation Markov with respect to the implemented simulator.
+
+## Delayed effects
+
+A temporal kernel controls when a simulated pathway effect arrives.
 
 Example:
-```bash
---temporal_kernel 0.6,0.3,0.1
+
+```text
+0.6,0.3,0.1
 ```
-This means 60% of the effect lands immediately, 30% on the next step, and 10% one step later.
 
-### 3. Drug–drug interactions
-Use `--interaction_scale` to enable a simple heuristic interaction tensor derived from overlap in pathway coverage.
+means:
 
-- positive values: synergy
-- negative values: antagonism
+- 60% applies on the current transition;
+- 30% applies one transition later;
+- 10% applies two transitions later.
 
-By default, the interaction is applied between the current drug and the most recent prior drug, but you can enlarge that window with `--interaction_history`.
+The quality-upgraded environment contains an explicit regression test for this timing. A previous implementation decremented delays before checking whether they were due, which caused the first delayed chunk to arrive too early.
 
----
+## Drug-drug interaction term
+
+The optional interaction tensor modifies the current drug's pathway effect based on recent actions.
+
+When an explicit tensor is not supplied, the repository can construct a simple pathway-overlap heuristic controlled by `--interaction_scale`.
+
+This is a **simulation mechanism**, not a pharmacological interaction database.
 
 ## Repository structure
 
 ```text
-RL-Path/
-├─ README.md
-├─ requirements.txt
-├─ .gitignore
-├─ src/
-│  ├─ __init__.py
-│  ├─ preprocess.py
-│  ├─ env.py
-│  ├─ dqn.py
-│  └─ baselines.py
-├─ train.py
-├─ evaluate.py
-├─ scripts/
-│  ├─ psc_pathways_and_drugs.py
-│  └─ psc_rollout.py
-├─ data/
-│  ├─ raw/
-│  └─ processed/
-└─ artifacts/
+.
+├── src/
+│   ├── env.py              # state/action/reward simulator
+│   ├── dqn.py              # DQN, replay buffer, checkpoints
+│   ├── baselines.py        # random + greedy baselines
+│   ├── evaluation.py       # paired evaluation + confidence intervals
+│   └── preprocess.py       # DGIdb/Reactome effect-matrix construction
+├── tests/
+├── scripts/
+│   ├── PSC_rollout.py
+│   ├── psc_pathways_and_drugs.py
+│   └── run_seed_sweep.py
+├── data/
+│   └── README.md
+├── train.py
+├── evaluate.py
+├── EXPERIMENTS.md
+├── MODEL_CARD.md
+├── pyproject.toml
+├── requirements.txt
+├── Dockerfile
+└── .github/workflows/ci.yml
 ```
 
----
+## Installation
 
-## Data sources
+```bash
+git clone https://github.com/seirana/RL-Path-AI-Agent-System-for-Treatment-Optimization.git
+cd RL-Path-AI-Agent-System-for-Treatment-Optimization
 
-DGIdb interactions:
-```text
-https://www.dgidb.org/data/latest/interactions.tsv
+python -m venv .venv
+source .venv/bin/activate
+
+python -m pip install --upgrade pip
+python -m pip install -e .
 ```
 
-Reactome mapping:
-```text
-https://download.reactome.org/current/Ensembl2Reactome.txt
+For tests and linting:
+
+```bash
+python -m pip install -e ".[dev]"
 ```
 
-Place them under:
+## Data inputs
+
+The preprocessing workflow expects local research files under `data/raw/` by default:
+
 ```text
 data/raw/dgidb_interactions.tsv
 data/raw/Ensembl2Reactome.txt
 ```
 
----
+The public repository does not vendor these external datasets.
 
-## Installation
+The current preprocessing step maps drug-gene interactions to Reactome pathways and creates a normalized drug-to-pathway coverage matrix.
 
-```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -r requirements.txt
-```
-
----
+See [data/README.md](data/README.md) for expected inputs and reproducibility notes.
 
 ## Train
 
-Baseline training with delayed effects and pairwise interactions:
+Example:
 
 ```bash
-python train.py \
+rlpath-train \
   --episodes 400 \
   --steps 10 \
   --top_drugs 60 \
   --top_pathways 40 \
   --temporal_kernel 0.6,0.3,0.1 \
   --interaction_scale 0.15 \
-  --interaction_history 1
+  --interaction_history 1 \
+  --eval_rollouts 30 \
+  --seed 42
 ```
 
-To recover the old immediate-effect behavior:
+Equivalent:
 
 ```bash
-python train.py --temporal_kernel 1.0 --interaction_scale 0.0
+python train.py ...
 ```
 
----
+By default, training resamples the disease-pathway mask each episode and includes that mask in the observation. This exposes the policy to multiple simulated pathway targets. Use `--fixed_disease_mask` to keep one sampled mask for all episodes.
+
+Training writes a model checkpoint, return/loss traces, an evaluation summary, a learning-curve image, and machine-readable run metadata.
 
 ## Evaluate
 
 ```bash
-python evaluate.py \
+rlpath-evaluate \
   --steps 10 \
   --top_drugs 60 \
   --top_pathways 40 \
   --temporal_kernel 0.6,0.3,0.1 \
-  --interaction_scale 0.15
+  --interaction_scale 0.15 \
+  --n_rollouts 30 \
+  --seed 10000
 ```
 
----
+Evaluation compares:
 
-## Output artifacts
+- DQN;
+- myopic greedy;
+- random.
 
-Training and evaluation write outputs into `artifacts/`, for example:
-- `dqn.pt`
-- `metrics.json`
-- `returns.json`
-- `losses.json`
-- `learning_curve.png`
-- `eval_summary.json`
+Each policy receives a **fresh environment with the same rollout seed**. This pairs the disease mask, initial-state draws, and transition-noise stream across policies.
 
----
+The random policy uses a separate action RNG, so random action selection does not shift the simulator's transition-noise sequence.
 
-## Notes on implementation
+The output includes mean, sample standard deviation, standard error, a 95% normal-approximation confidence interval, and paired return differences.
 
-- `train.py` no longer uses a hard-coded absolute raw-data path; it now defaults to `data/raw`.
-- `env.py` exposes `obs_dim`, which should be used by the agent instead of `n_pathways`.
-- `scripts/psc_rollout.py` was updated so it works with the expanded observation and corrected processed-data path.
-- The greedy baseline was adapted to the richer environment logic.
+## Independent training seeds
 
----
+One trained network is not enough to characterize RL optimization variability.
 
-## Suggested experiments
+Run several independent training seeds:
 
-1. **Ablation study**
-   - immediate effects only
-   - delayed effects only
-   - delayed effects + interactions
+```bash
+rlpath-seed-sweep \
+  --seeds 11,22,33,44,55 \
+  -- \
+  --episodes 400 \
+  --eval_rollouts 30
+```
 
-2. **Interaction sign study**
-   - positive interaction scale for synergy
-   - negative interaction scale for antagonism
+The sweep stores each run separately and summarizes the DQN evaluation return across training seeds.
 
-3. **Temporal sensitivity**
-   - compare short kernels like `1.0`
-   - with broader kernels like `0.5,0.3,0.2`
+See [EXPERIMENTS.md](EXPERIMENTS.md).
 
-These comparisons help show whether sequence-aware treatment control becomes more valuable once treatment history matters.
+## Reproducibility
+
+Randomness is deliberately separated:
+
+- simulator state/noise RNG;
+- random-policy action RNG;
+- DQN exploration RNG;
+- replay-buffer sampling RNG;
+- PyTorch initialization seed.
+
+Because the observation was expanded to include the exact simulator context, checkpoints trained with the earlier observation layout are not architecture-compatible with this upgraded version and should be retrained.
+
+The model checkpoint records:
+
+- observation dimension;
+- action count;
+- DQN configuration;
+- seed;
+- model state.
+
+Training also writes `run_metadata.json` with command arguments and software versions.
+
+## Tests
+
+```bash
+python -m pytest
+```
+
+The suite covers:
+
+- delayed-effect timing;
+- Markov observation dimensions;
+- independent action/transition RNG streams;
+- invalid environment configuration;
+- deterministic replay sampling;
+- checkpoint shape compatibility;
+- paired evaluation statistics;
+- effect-matrix serialization without pickled object arrays.
+
+Run lint checks:
+
+```bash
+python -m ruff check src tests scripts train.py evaluate.py
+```
+
+GitHub Actions runs tests and linting on Python 3.10, 3.11, and 3.12, checks the command-line entry points, and builds the Docker image.
+
+## Docker
+
+Build:
+
+```bash
+docker build -t rl-path .
+```
+
+A real training run requires the external raw data to be mounted into the container:
+
+```bash
+mkdir -p artifacts data/processed
+
+docker run --rm \
+  -v "$PWD/data/raw:/app/data/raw:ro" \
+  -v "$PWD/data/processed:/app/data/processed" \
+  -v "$PWD/artifacts:/app/artifacts" \
+  rl-path \
+  --episodes 400 \
+  --seed 42
+```
+
+## PSC-specific scripts
+
+Two PSC-oriented scripts are retained as research demonstrations:
+
+- `scripts/psc_pathways_and_drugs.py` computes pathway-overlap research signals from local files;
+- `scripts/PSC_rollout.py` creates a PSC-keyword-matched disease mask and runs a simulated DQN action sequence.
+
+The PSC rollout now aligns the simulator's reward mask with the matched PSC-related pathway subset instead of changing only the initial state.
+
+Outputs from these scripts are **not treatment recommendations**.
+
+## What this project can demonstrate
+
+The repository can support algorithmic questions such as:
+
+- whether DQN learns under the defined simulator;
+- whether DQN differs from random/greedy baselines under paired simulated conditions;
+- whether learned-policy performance changes under temporal or interaction ablations;
+- how much results vary across independent training seeds.
+
+It does not demonstrate clinical effectiveness.
+
+## License
+
+No license file is currently included in this repository. Repository visibility alone does not grant reuse rights; add an explicit license if you intend to permit redistribution or reuse.
