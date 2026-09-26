@@ -41,7 +41,9 @@ jobs:
         run: |
           rlpath-train --help
           rlpath-evaluate --help
-          python scripts/run_seed_sweep.py --help
+          rlpath-seed-sweep --help
+          rlpath-psc-pathways --help
+          python -c "import scripts.PSC_rollout"
 
   docker:
     needs: test
