@@ -22,7 +22,7 @@ def test_replay_buffer_sampling_is_seeded():
     batch_a = first.sample(4)
     batch_b = second.sample(4)
 
-    for left, right in zip(batch_a, batch_b):
+    for left, right in zip(batch_a, batch_b, strict=True):
         np.testing.assert_array_equal(left, right)
 
 
