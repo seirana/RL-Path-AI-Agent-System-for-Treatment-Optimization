@@ -26,9 +26,12 @@ dev = [
 [project.scripts]
 rlpath-train = "train:main"
 rlpath-evaluate = "evaluate:main"
+rlpath-seed-sweep = "scripts.run_seed_sweep:main"
+rlpath-psc-rollout = "scripts.PSC_rollout:main"
+rlpath-psc-pathways = "scripts.psc_pathways_and_drugs:main"
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["src", "scripts"]
 py-modules = ["train", "evaluate"]
 
 [tool.pytest.ini_options]
